@@ -1,7 +1,6 @@
 // import config from './appConfig.js';
 import { SourceMapConsumer } from 'source-map-js';
 import fs from 'fs';
-import Logger from './logger.js';
 import path from 'path';
 
 class ErrorMapper {
@@ -19,24 +18,24 @@ class ErrorMapper {
      * @returns {Promise<void>} - Resolves with no return value; logs an error if any issues occur.
      */
     static async init({ filePath }) {
-        const logger = new Logger();
         if (!fs.existsSync(filePath)) {
-            logger.warn("Script files are not available for loading the source map in the frontend build.");
-            return;
+            throw new Error("Script files are not available for loading the source map in the frontend build.");
         }
         try {
             const files = await fs.promises.readdir(filePath);
-            const regex = /main\.\w+\.js\.map/;
-            const matchingFile = files.find(file => regex.test(file));
-
-            if (matchingFile) {
-                const fileData = await fs.promises.readFile(path.join(filePath, matchingFile), 'utf-8');
-                this._sourceMap.source = JSON.parse(fileData);
+            const matchingFile = files.find(file => /^main\.\w+\.js\.map$/.test(file));
+    
+            if (!matchingFile) {
+                throw new Error("No valid source map file found in the directory.");
             }
+    
+            const fileData = await fs.promises.readFile(path.join(filePath, matchingFile), 'utf-8');
+            this._sourceMap.source = JSON.parse(fileData);
         } catch (error) {
-            logger.error({ err: error }, "Error while reading the source mapping file");
+            throw new Error(`Error while reading the source mapping file: ${error.message}`);
         }
     }
+    
 
     /**
      * Remaps a stack trace using source maps to provide original file names, line numbers, 
@@ -79,32 +78,39 @@ class ErrorMapper {
     }
 
     /**
-     * Handles client-side error logging and response in case of frontend build errors.
-     * - Extracts app name and error stack from request body, query, or parameters.
-     * - Uses source map to remap stack trace for improved traceability (file name/line number).
-     * - Logs client error details, either to an external logging service or locally, 
-     *   depending on configuration.
-     * - Sends a confirmation response to the client after logging.
-     *
-     * @param {Object} req - The HTTP request object containing error details from the frontend.
-     * @param {Object} res - The HTTP response object for sending back confirmation to the client.
-     * @returns {boolean} - Returns true if the error was successfully logged.
-     */
-    static async execute(req, res) {
-        const logger = new Logger();
-        // const config = logger.readConfig();
-        const { appName, stack, rawUrl } = { ...req.body, ...req.query, ...req.params };
+ * Handles client-side error logging and response in case of frontend build errors.
+ * - Extracts app name and error stack from request body, query, or parameters.
+ * - Uses source map to remap stack trace for improved traceability.
+ * - Logs client error details using an external logging service or locally.
+ * - Sends a confirmation response to the client after logging.
+ *
+ * @param {Object} req - HTTP request object containing frontend error details.
+ * @param {Object} res - HTTP response object for sending confirmation.
+ * @param {Object} logger - Logger instance for handling logs.
+ * @returns {boolean} - Returns true if error logging succeeds.
+ */
+    static async execute(req, res, logger) {
+        if (!logger) {
+            throw new Error("Logger instance is required.");
+        }
+
+        // Extract relevant data
+        const { appName = '', stack, rawUrl } = { ...req.body, ...req.query, ...req.params };
         const remappedStack = this.reMapStackWithSourceCode(stack, 'source');
+
+        // Prepare log data
+        const logData = {
+            req: { ...req, headers: req.headers, body: {} },
+            err: { stack: remappedStack },
+            machineName: appName.toLowerCase(),
+            rawUrl
+        };
+
+        // Log error
         if (logger.clienterror) {
             logger.clienterror({ err: { stack: remappedStack } }, "Client-side error: An issue occurred while processing the request.");
         } else {
-            const logData = {
-                req: { ...req, headers: req.headers, body: {} },
-                err: { stack: remappedStack },
-                machineName: appName.toLowerCase() || '',
-                rawUrl
-            };
-            req.log.error(logData);
+            req.log?.error(logData);
             res.status(200).send('Mail Sent');
         }
         return true;
